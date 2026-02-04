@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ren \"c:\\\\Users\\\\ajogu\\\\Documents\\\\campus-mail\\\\client\\\\src\\\\pages\\\\Register.ts\" \"Register.tsx\")",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite build)",
+      "Bash(tree:*)"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+# Uploads
+uploads/
+
+# Environment variables
+.env
+
+# Claude
+.claude/
