@@ -1,15 +1,17 @@
 import axios from "axios";
 
-const SERVER_URL = "http://localhost:5000";
-const API_URL = `${SERVER_URL}/api`;
+// const SERVER_URL = "http://localhost:5000";
+const API_URL = `/api`;
 
 export const api = axios.create({
   baseURL: API_URL,
 });
 
-export function getAvatarUrl(avatarPath: string | null | undefined): string | null {
+export function getAvatarUrl(
+  avatarPath: string | null | undefined,
+): string | null {
   if (!avatarPath) return null;
-  return `${SERVER_URL}${avatarPath}`;
+  return `${avatarPath}`;
 }
 
 // Add token to every request

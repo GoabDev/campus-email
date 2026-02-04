@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import type { Email } from "@/types";
 import { Card } from "@/components/ui/card";
 import { Star, Trash2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+// import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 function EmailSkeleton() {
@@ -41,7 +41,7 @@ function formatDate(dateStr: string) {
     return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
   const diffDays = Math.floor(
-    (now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24)
+    (now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24),
   );
   if (diffDays < 7) {
     return date.toLocaleDateString([], { weekday: "short" });
@@ -110,10 +110,7 @@ export default function Starred() {
       ) : (
         <Card className="overflow-hidden divide-y divide-border">
           {emails?.map((email) => (
-            <div
-              key={email.id}
-              className="flex items-center gap-1 pr-2"
-            >
+            <div key={email.id} className="flex items-center gap-1 pr-2">
               <button
                 onClick={() => navigate(`/email/${email.id}`)}
                 className="flex-1 text-left p-4 flex items-center gap-3 transition-colors hover:bg-accent/50 cursor-pointer min-w-0"
