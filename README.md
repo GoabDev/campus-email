@@ -158,7 +158,7 @@ Open **two terminals**:
 
 ```bash
 cd server
-node index.js
+npm start
 ```
 
 **Terminal 2 -- Frontend (port 5173)**
@@ -364,7 +364,7 @@ This runs TypeScript compilation followed by the Vite build, producing optimized
 
 ```bash
 cd server
-node index.js
+npm start
 ```
 
 The Express server serves the built client assets from `../client/dist` and handles SPA routing with a catch-all route. Access the full application at **http://localhost:5000**.
