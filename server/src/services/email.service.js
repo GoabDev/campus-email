@@ -2,6 +2,7 @@ const emailRepository = require("../repositories/email.repository");
 const metadataRepository = require("../repositories/user-email-metadata.repository");
 const userRepository = require("../repositories/user.repository");
 const { createHttpError } = require("../utils/http-error");
+const MAX_BULK_RECIPIENTS = 50;
 
 function getUserEmailRole(emailId, userId) {
   const email = emailRepository.findOwnership(emailId);
@@ -22,35 +23,101 @@ function getUserEmailRole(emailId, userId) {
 }
 
 function sendEmail(userId, payload) {
-  const { to_email, subject, body, reply_to_id } = payload;
+  const { subject, body, reply_to_id } = payload;
+  const recipients = normalizeRecipients(payload);
 
-  if (!to_email || !subject || !body) {
-    throw createHttpError(400, "to_email, subject, and body are required");
+  if (!recipients.length || !subject || !body) {
+    throw createHttpError(400, "recipient, subject, and body are required");
   }
 
-  const recipient = userRepository.findByEmail(to_email);
-
-  if (!recipient) {
-    throw createHttpError(400, "Recipient not found");
+  if (recipients.length > MAX_BULK_RECIPIENTS) {
+    throw createHttpError(
+      400,
+      `You can send to at most ${MAX_BULK_RECIPIENTS} recipients at once`,
+    );
   }
 
-  if (recipient.id === userId) {
-    throw createHttpError(400, "Cannot send email to yourself");
+  if (reply_to_id && recipients.length > 1) {
+    throw createHttpError(400, "Bulk replies are not supported");
   }
 
   if (reply_to_id && !getUserEmailRole(reply_to_id, userId)) {
     throw createHttpError(400, "Invalid reply_to_id");
   }
 
-  const result = emailRepository.createEmail(
-    userId,
-    recipient.id,
-    subject,
-    body,
-    reply_to_id || null,
-  );
+  const matchedUsers = userRepository.findByEmails(recipients);
+  const foundByEmail = new Map(matchedUsers.map((user) => [user.email.toLowerCase(), user]));
+  const successfulRecipients = [];
+  const failedRecipients = [];
 
-  return { message: "Email sent", emailId: result.lastInsertRowid };
+  for (const email of recipients) {
+    const recipient = foundByEmail.get(email);
+
+    if (!recipient) {
+      failedRecipients.push({ email, reason: "Recipient not found" });
+      continue;
+    }
+
+    if (recipient.id === userId) {
+      failedRecipients.push({ email, reason: "Cannot send email to yourself" });
+      continue;
+    }
+
+    successfulRecipients.push(recipient);
+  }
+
+  if (!successfulRecipients.length) {
+    throw createHttpError(400, "No valid recipients to send to");
+  }
+
+  const emailIds =
+    successfulRecipients.length === 1
+      ? [
+          Number(
+            emailRepository.createEmail(
+              userId,
+              successfulRecipients[0].id,
+              subject,
+              body,
+              reply_to_id || null,
+            ).lastInsertRowid,
+          ),
+        ]
+      : emailRepository.createEmails(
+          userId,
+          successfulRecipients.map((recipient) => recipient.id),
+          subject,
+          body,
+          reply_to_id || null,
+        );
+
+  return {
+    message:
+      failedRecipients.length > 0
+        ? "Email sent to available recipients"
+        : "Email sent successfully",
+    emailId: emailIds.length === 1 ? emailIds[0] : null,
+    email_ids: emailIds,
+    recipients: successfulRecipients.map((recipient) => recipient.email),
+    failed_recipients: failedRecipients,
+    sent_count: emailIds.length,
+  };
+}
+
+function normalizeRecipients(payload) {
+  const recipients = [];
+
+  if (payload.to_email) {
+    recipients.push(payload.to_email.trim().toLowerCase());
+  }
+
+  if (Array.isArray(payload.to_emails)) {
+    for (const email of payload.to_emails) {
+      recipients.push(email.trim().toLowerCase());
+    }
+  }
+
+  return [...new Set(recipients)];
 }
 
 function getInbox(userId) {

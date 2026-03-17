@@ -14,6 +14,28 @@ function createEmail(fromUserId, toUserId, subject, body, replyToId) {
     .run(fromUserId, toUserId, subject, body, replyToId);
 }
 
+function createEmails(fromUserId, recipientIds, subject, body, replyToId) {
+  const insertEmail = db.prepare(
+    "INSERT INTO emails (from_user_id, to_user_id, subject, body, reply_to_id) VALUES (?, ?, ?, ?, ?)",
+  );
+
+  const insertMany = db.transaction((ids) =>
+    ids.map((recipientId) => {
+      const result = insertEmail.run(
+        fromUserId,
+        recipientId,
+        subject,
+        body,
+        replyToId,
+      );
+
+      return Number(result.lastInsertRowid);
+    }),
+  );
+
+  return insertMany(recipientIds);
+}
+
 function findInboxByUserId(userId) {
   return db
     .prepare(
@@ -242,6 +264,7 @@ function updateReadStatus(emailId, isRead) {
 module.exports = {
   countUnreadByUserId,
   createEmail,
+  createEmails,
   findByIdForUser,
   findInboxByUserId,
   findOwnership,

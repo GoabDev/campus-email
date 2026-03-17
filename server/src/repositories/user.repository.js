@@ -10,6 +10,17 @@ function findByEmail(email) {
   return db.prepare("SELECT * FROM users WHERE email = ?").get(email);
 }
 
+function findByEmails(emails) {
+  if (!emails.length) {
+    return [];
+  }
+
+  const placeholders = emails.map(() => "?").join(", ");
+  return db
+    .prepare(`SELECT * FROM users WHERE email IN (${placeholders})`)
+    .all(...emails);
+}
+
 function findById(id) {
   return db
     .prepare("SELECT id, email, name, avatar, created_at FROM users WHERE id = ?")
@@ -35,6 +46,7 @@ module.exports = {
   findAllExceptUserId,
   findAvatarById,
   findByEmail,
+  findByEmails,
   findById,
   updateAvatar,
 };

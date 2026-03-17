@@ -6,9 +6,29 @@ const {
 } = require("../utils/validation");
 
 function validateComposeRequest(req) {
-  req.body.to_email = validateEmailAddress(req.body.to_email, "to_email");
   req.body.subject = validateRequiredString(req.body.subject, "subject");
   req.body.body = validateRequiredString(req.body.body, "body");
+
+  const hasSingleRecipient = req.body.to_email !== undefined && req.body.to_email !== null && req.body.to_email !== "";
+  const hasManyRecipients = Array.isArray(req.body.to_emails);
+
+  if (!hasSingleRecipient && !hasManyRecipients) {
+    throw createHttpError(400, "to_email or to_emails is required");
+  }
+
+  if (hasSingleRecipient) {
+    req.body.to_email = validateEmailAddress(req.body.to_email, "to_email");
+  }
+
+  if (hasManyRecipients) {
+    if (req.body.to_emails.length === 0) {
+      throw createHttpError(400, "to_emails must contain at least one recipient");
+    }
+
+    req.body.to_emails = req.body.to_emails.map((email, index) =>
+      validateEmailAddress(email, `to_emails[${index}]`),
+    );
+  }
 
   if (req.body.reply_to_id !== undefined && req.body.reply_to_id !== null && req.body.reply_to_id !== "") {
     req.body.reply_to_id = parsePositiveInt(req.body.reply_to_id, "reply_to_id");
