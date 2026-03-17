@@ -1,0 +1,51 @@
+const schemaSql = `
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    name TEXT NOT NULL,
+    avatar TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_user_id INTEGER NOT NULL,
+    to_user_id INTEGER NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    is_read INTEGER DEFAULT 0,
+    reply_to_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (from_user_id) REFERENCES users(id),
+    FOREIGN KEY (to_user_id) REFERENCES users(id),
+    FOREIGN KEY (reply_to_id) REFERENCES emails(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS user_email_metadata (
+    user_id INTEGER NOT NULL,
+    email_id INTEGER NOT NULL,
+    is_starred INTEGER DEFAULT 0,
+    is_deleted INTEGER DEFAULT 0,
+    deleted_at DATETIME,
+    PRIMARY KEY (user_id, email_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
+  );
+`;
+
+const indexSql = `
+  CREATE INDEX IF NOT EXISTS idx_emails_to_user ON emails(to_user_id);
+  CREATE INDEX IF NOT EXISTS idx_emails_from_user ON emails(from_user_id);
+  CREATE INDEX IF NOT EXISTS idx_emails_reply_to ON emails(reply_to_id);
+  CREATE INDEX IF NOT EXISTS idx_emails_created_at ON emails(created_at);
+  CREATE INDEX IF NOT EXISTS idx_emails_subject ON emails(subject);
+  CREATE INDEX IF NOT EXISTS idx_uem_user ON user_email_metadata(user_id);
+  CREATE INDEX IF NOT EXISTS idx_uem_starred ON user_email_metadata(user_id, is_starred);
+  CREATE INDEX IF NOT EXISTS idx_uem_deleted ON user_email_metadata(user_id, is_deleted);
+`;
+
+module.exports = {
+  indexSql,
+  schemaSql,
+};
