@@ -5,7 +5,7 @@ import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
-import type { User } from "@/types";
+import type { SendEmailResponse, User } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,15 +18,18 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Mic, Send, Square, Trash2, UserRound } from "lucide-react";
+import { Mic, Send, Square, Trash2, UserRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 const composeSchema = z.object({
-  to_email: z.string().email("Invalid email"),
+  recipientsInput: z.string().optional(),
   subject: z.string().min(1, "Subject required"),
   body: z.string(),
 });
+
+const emailSchema = z.string().email("Invalid email");
+const MAX_RECIPIENTS = 50;
 
 type ComposeForm = z.infer<typeof composeSchema>;
 
@@ -37,6 +40,13 @@ type RecordedVoiceNote = {
   fileName: string;
   durationSeconds: number | null;
 };
+
+function parseRecipients(input: string) {
+  return input
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+}
 
 async function blobToBase64(blob: Blob) {
   return await new Promise<string>((resolve, reject) => {
@@ -64,6 +74,8 @@ export default function Compose() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
   const recordingStartedAtRef = useRef<number | null>(null);
+  const [selectedRecipients, setSelectedRecipients] = useState<string[]>([]);
+  const [recipientError, setRecipientError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceNote, setVoiceNote] = useState<RecordedVoiceNote | null>(null);
   const [isRecorderSupported] = useState(
@@ -75,11 +87,12 @@ export default function Compose() {
   const replyTo = searchParams.get("replyTo");
   const replyEmail = searchParams.get("email");
   const replySubject = searchParams.get("subject");
+  const isReply = Boolean(replyTo);
 
   const form = useForm<ComposeForm>({
     resolver: zodResolver(composeSchema),
     defaultValues: {
-      to_email: replyEmail || "",
+      recipientsInput: replyEmail || "",
       subject: replySubject ? `Re: ${replySubject}` : "",
       body: "",
     },
@@ -92,7 +105,8 @@ export default function Compose() {
 
   const mutation = useMutation({
     mutationFn: (data: {
-      to_email: string;
+      to_email?: string;
+      to_emails?: string[];
       subject: string;
       body: string;
       reply_to_id?: string | null;
@@ -100,25 +114,24 @@ export default function Compose() {
       voice_note_mime_type?: string;
       voice_note_file_name?: string;
       voice_note_duration_seconds?: number | null;
-    }) => api.post("/emails", data),
-    onSuccess: () => {
-      toast.success("Email sent successfully");
+    }) => api.post<SendEmailResponse>("/emails", data).then((res) => res.data),
+    onSuccess: (result) => {
+      if (result.failed_recipients.length > 0) {
+        toast.success(
+          `Sent to ${result.sent_count} recipient(s). ${result.failed_recipients.length} failed.`,
+        );
+      } else {
+        toast.success(
+          result.sent_count > 1
+            ? `Email sent to ${result.sent_count} recipients`
+            : "Email sent successfully",
+        );
+      }
       navigate("/sent");
     },
-    onError: (error: unknown) => {
+    onError: (error: any) => {
       const message =
-        typeof error === "object" &&
-        error !== null &&
-        "response" in error &&
-        typeof error.response === "object" &&
-        error.response !== null &&
-        "data" in error.response &&
-        typeof error.response.data === "object" &&
-        error.response.data !== null &&
-        "error" in error.response.data &&
-        typeof error.response.data.error === "string"
-          ? error.response.data.error
-          : "Failed to send. Check recipient email.";
+        error?.response?.data?.error || "Failed to send. Check recipient details.";
       toast.error(message);
     },
     onSettled: () => {
@@ -213,9 +226,69 @@ export default function Compose() {
     }
   };
 
-  const onSubmit = async (data: ComposeForm) => {
-    const trimmedBody = data.body.trim();
+  const recipientsInput = form.watch("recipientsInput") || "";
+  const selectedRecipientSet = new Set(selectedRecipients);
 
+  function toggleRecipient(email: string) {
+    if (isReply) {
+      return;
+    }
+
+    setRecipientError(null);
+    setSelectedRecipients((current) =>
+      current.includes(email)
+        ? current.filter((recipient) => recipient !== email)
+        : [...current, email],
+    );
+  }
+
+  function removeRecipient(email: string) {
+    setSelectedRecipients((current) =>
+      current.filter((recipient) => recipient !== email),
+    );
+  }
+
+  function buildRecipients(input: string) {
+    const merged = [...parseRecipients(input), ...selectedRecipients];
+    return [...new Set(merged)];
+  }
+
+  function validateRecipients(recipients: string[]) {
+    if (!recipients.length) {
+      return "Add at least one recipient";
+    }
+
+    if (recipients.length > MAX_RECIPIENTS) {
+      return `You can send to at most ${MAX_RECIPIENTS} recipients`;
+    }
+
+    const invalidEmail = recipients.find(
+      (recipient) => !emailSchema.safeParse(recipient).success,
+    );
+
+    if (invalidEmail) {
+      return `Invalid email: ${invalidEmail}`;
+    }
+
+    if (isReply && recipients.length > 1) {
+      return "Replies can only be sent to one recipient";
+    }
+
+    return null;
+  }
+
+  const onSubmit = async (data: ComposeForm) => {
+    const recipients = buildRecipients(data.recipientsInput || "");
+    const validationMessage = validateRecipients(recipients);
+
+    if (validationMessage) {
+      setRecipientError(validationMessage);
+      return;
+    }
+
+    setRecipientError(null);
+
+    const trimmedBody = data.body.trim();
     if (!trimmedBody && !voiceNote) {
       form.setError("body", {
         type: "manual",
@@ -226,22 +299,32 @@ export default function Compose() {
 
     form.clearErrors("body");
 
-    try {
-      const payload: {
-        to_email: string;
-        subject: string;
-        body: string;
-        reply_to_id?: string | null;
-        voice_note_base64?: string;
-        voice_note_mime_type?: string;
-        voice_note_file_name?: string;
-        voice_note_duration_seconds?: number | null;
-      } = {
-        ...data,
-        body: trimmedBody,
-        reply_to_id: replyTo,
-      };
+    const payload: {
+      to_email?: string;
+      to_emails?: string[];
+      subject: string;
+      body: string;
+      reply_to_id?: string | null;
+      voice_note_base64?: string;
+      voice_note_mime_type?: string;
+      voice_note_file_name?: string;
+      voice_note_duration_seconds?: number | null;
+    } =
+      recipients.length === 1
+        ? {
+            to_email: recipients[0],
+            subject: data.subject,
+            body: trimmedBody,
+            reply_to_id: replyTo,
+          }
+        : {
+            to_emails: recipients,
+            subject: data.subject,
+            body: trimmedBody,
+            reply_to_id: null,
+          };
 
+    try {
       if (voiceNote) {
         payload.voice_note_base64 = await blobToBase64(voiceNote.blob);
         payload.voice_note_mime_type = voiceNote.mimeType;
@@ -255,18 +338,16 @@ export default function Compose() {
     }
   };
 
-  const selectedEmail = form.watch("to_email");
-
   return (
     <div>
       <h2 className="text-xl font-semibold text-foreground mb-4">
-        {replyTo ? "Reply" : "New message"}
+        {isReply ? "Reply" : "New message"}
       </h2>
 
       <Card className="border-border">
         <CardHeader className="pb-2">
           <CardTitle className="text-base font-medium text-muted-foreground">
-            {replyTo ? "Replying to conversation" : "Compose your email"}
+            {isReply ? "Replying to conversation" : "Compose your email"}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -274,26 +355,70 @@ export default function Compose() {
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               <FormField
                 control={form.control}
-                name="to_email"
+                name="recipientsInput"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>To</FormLabel>
                     <FormControl>
-                      <Input placeholder="recipient@campus.edu" {...field} />
+                      <Input
+                        placeholder={
+                          isReply
+                            ? "recipient@campus.edu"
+                            : "recipient@campus.edu, second@campus.edu"
+                        }
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage />
-                    {users && users.length > 0 && (
+                    {recipientError ? (
+                      <p className="text-sm font-medium text-destructive">
+                        {recipientError}
+                      </p>
+                    ) : null}
+                    {!isReply ? (
+                      <p className="text-xs text-muted-foreground">
+                        Type one or more email addresses separated by commas, or
+                        select users below.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Replies support one recipient only in this version.
+                      </p>
+                    )}
+                    {selectedRecipients.length > 0 && !isReply ? (
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {selectedRecipients.map((email) => (
+                          <span
+                            key={email}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs text-primary"
+                          >
+                            {email}
+                            <button
+                              type="button"
+                              onClick={() => removeRecipient(email)}
+                              className="rounded-full p-0.5 hover:bg-primary/15"
+                              aria-label={`Remove ${email}`}
+                            >
+                              <X size={12} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {users && users.length > 0 ? (
                       <div className="flex flex-wrap gap-1.5 mt-2">
                         {users.map((user) => (
                           <button
                             key={user.id}
                             type="button"
-                            onClick={() => form.setValue("to_email", user.email)}
+                            onClick={() => toggleRecipient(user.email)}
+                            disabled={isReply}
                             className={cn(
-                              "inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors",
-                              selectedEmail === user.email
+                              "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-colors",
+                              selectedRecipientSet.has(user.email)
                                 ? "border-primary bg-primary/10 text-primary"
                                 : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground",
+                              isReply && "cursor-not-allowed opacity-50",
                             )}
                           >
                             <UserRound size={12} />
@@ -301,7 +426,12 @@ export default function Compose() {
                           </button>
                         ))}
                       </div>
-                    )}
+                    ) : null}
+                    {!isReply && recipientsInput ? (
+                      <p className="text-xs text-muted-foreground">
+                        Parsed recipients: {buildRecipients(recipientsInput).length}
+                      </p>
+                    ) : null}
                   </FormItem>
                 )}
               />

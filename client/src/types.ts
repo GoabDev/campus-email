@@ -43,3 +43,15 @@ export interface SearchResponse {
   limit: number;
   totalPages: number;
 }
+
+export interface SendEmailResponse {
+  message: string;
+  emailId: number | null;
+  email_ids: number[];
+  recipients: string[];
+  failed_recipients: Array<{
+    email: string;
+    reason: string;
+  }>;
+  sent_count: number;
+}
