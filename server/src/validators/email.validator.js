@@ -1,6 +1,5 @@
 const { createHttpError } = require("../utils/http-error");
 const {
-  isNonEmptyString,
   parsePositiveInt,
   validateEmailAddress,
   validateRequiredString,
@@ -12,14 +11,17 @@ function validateComposeRequest(req) {
 
   const hasSingleRecipient = req.body.to_email !== undefined && req.body.to_email !== null && req.body.to_email !== "";
   const hasManyRecipients = Array.isArray(req.body.to_emails);
-  const hasVoiceNote = isNonEmptyString(req.body.voice_note_base64);
+  const hasVoiceNoteUpload =
+    req.body.voice_note_upload_id !== undefined &&
+    req.body.voice_note_upload_id !== null &&
+    req.body.voice_note_upload_id !== "";
 
   if (!hasSingleRecipient && !hasManyRecipients) {
     throw createHttpError(400, "to_email or to_emails is required");
   }
 
-  if (!req.body.body && !hasVoiceNote) {
-    throw createHttpError(400, "body or voice_note_base64 is required");
+  if (!req.body.body && !hasVoiceNoteUpload) {
+    throw createHttpError(400, "body or voice_note_upload_id is required");
   }
 
   if (hasSingleRecipient) {
@@ -42,10 +44,32 @@ function validateComposeRequest(req) {
     req.body.reply_to_id = null;
   }
 
-  if (req.body.voice_note_duration_seconds !== undefined && req.body.voice_note_duration_seconds !== null && req.body.voice_note_duration_seconds !== "") {
+  if (hasVoiceNoteUpload) {
+    req.body.voice_note_upload_id = parsePositiveInt(
+      req.body.voice_note_upload_id,
+      "voice_note_upload_id",
+    );
+  } else {
+    req.body.voice_note_upload_id = null;
+  }
+}
+
+function validateVoiceNoteUploadRequest(req) {
+  if (!req.file) {
+    throw createHttpError(400, "voice_note file is required");
+  }
+
+  if (
+    req.body.voice_note_duration_seconds !== undefined &&
+    req.body.voice_note_duration_seconds !== null &&
+    req.body.voice_note_duration_seconds !== ""
+  ) {
     const duration = Number(req.body.voice_note_duration_seconds);
     if (!Number.isFinite(duration) || duration < 0) {
-      throw createHttpError(400, "voice_note_duration_seconds must be a valid number");
+      throw createHttpError(
+        400,
+        "voice_note_duration_seconds must be a valid number",
+      );
     }
     req.body.voice_note_duration_seconds = duration;
   } else {
@@ -89,4 +113,5 @@ module.exports = {
   validateEmailIdParam,
   validateReadStatusRequest,
   validateSearchRequest,
+  validateVoiceNoteUploadRequest,
 };

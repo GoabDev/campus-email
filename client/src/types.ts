@@ -13,6 +13,10 @@ export interface VoiceNote {
   duration_seconds: number | null;
 }
 
+export interface VoiceNoteUploadResponse extends VoiceNote {
+  id: number;
+}
+
 export interface Email {
   id: number;
   from_user_id: number;

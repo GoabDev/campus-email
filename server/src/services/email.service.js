@@ -6,19 +6,28 @@ const { createHttpError } = require("../utils/http-error");
 const fs = require("fs");
 const path = require("path");
 const MAX_BULK_RECIPIENTS = 50;
-const MAX_VOICE_NOTE_SIZE_BYTES = 10 * 1024 * 1024;
 const MAX_VOICE_NOTE_DURATION_SECONDS = 300;
-const ALLOWED_VOICE_NOTE_TYPES = new Set([
-  "audio/webm",
-  "audio/ogg",
-  "audio/mpeg",
-  "audio/mp4",
-  "audio/x-m4a",
-  "audio/wav",
-  "audio/x-wav",
-]);
+const VOICE_NOTE_UPLOAD_TTL_HOURS = 24;
 
 fs.mkdirSync(voiceNotesUploadPath, { recursive: true });
+
+function cleanupExpiredVoiceNoteUploads() {
+  const expiredUploads =
+    emailRepository.findExpiredVoiceNoteUploads(VOICE_NOTE_UPLOAD_TTL_HOURS);
+
+  expiredUploads.forEach((upload) => {
+    const fileName = path.basename(String(upload.file_path || ""));
+    const absoluteFilePath = path.join(voiceNotesUploadPath, fileName);
+
+    try {
+      if (fileName && fs.existsSync(absoluteFilePath)) {
+        fs.unlinkSync(absoluteFilePath);
+      }
+    } catch {}
+
+    emailRepository.deleteVoiceNoteUpload(upload.id);
+  });
+}
 
 function getUserEmailRole(emailId, userId) {
   const email = emailRepository.findOwnership(emailId);
@@ -39,12 +48,13 @@ function getUserEmailRole(emailId, userId) {
 }
 
 function sendEmail(userId, payload) {
+  cleanupExpiredVoiceNoteUploads();
   const { subject, reply_to_id } = payload;
   const body = typeof payload.body === "string" ? payload.body : "";
   const recipients = normalizeRecipients(payload);
-  const voiceNote = normalizeVoiceNote(payload);
+  const voiceNoteUpload = getVoiceNoteUpload(payload, userId);
 
-  if (!recipients.length || !subject || (!body.trim() && !voiceNote)) {
+  if (!recipients.length || !subject || (!body.trim() && !voiceNoteUpload)) {
     throw createHttpError(
       400,
       "recipient, subject, and either body or voice note are required",
@@ -92,14 +102,8 @@ function sendEmail(userId, payload) {
   }
 
   const recipientIds = successfulRecipients.map((recipient) => recipient.id);
-  let savedVoiceNotePath = null;
 
   try {
-    if (voiceNote) {
-      savedVoiceNotePath = path.join(voiceNotesUploadPath, voiceNote.stored_file_name);
-      fs.writeFileSync(savedVoiceNotePath, voiceNote.buffer);
-    }
-
     const emailIds =
       recipientIds.length === 1
         ? [
@@ -121,14 +125,15 @@ function sendEmail(userId, payload) {
             reply_to_id || null,
           );
 
-    if (voiceNote) {
+    if (voiceNoteUpload) {
       emailRepository.createVoiceNotes(emailIds, {
-        file_name: voiceNote.file_name,
-        file_path: path.posix.join("voice-notes", voiceNote.stored_file_name),
-        mime_type: voiceNote.mime_type,
-        size_bytes: voiceNote.size_bytes,
-        duration_seconds: voiceNote.duration_seconds,
+        file_name: voiceNoteUpload.file_name,
+        file_path: voiceNoteUpload.file_path,
+        mime_type: voiceNoteUpload.mime_type,
+        size_bytes: voiceNoteUpload.size_bytes,
+        duration_seconds: voiceNoteUpload.duration_seconds,
       });
+      emailRepository.deleteVoiceNoteUpload(voiceNoteUpload.id);
     }
 
     return {
@@ -143,8 +148,8 @@ function sendEmail(userId, payload) {
       sent_count: emailIds.length,
     };
   } catch (error) {
-    if (savedVoiceNotePath && fs.existsSync(savedVoiceNotePath)) {
-      fs.unlinkSync(savedVoiceNotePath);
+    if (error?.status) {
+      throw error;
     }
 
     throw createHttpError(500, "Failed to send email");
@@ -167,86 +172,73 @@ function normalizeRecipients(payload) {
   return [...new Set(recipients)];
 }
 
-function normalizeVoiceNote(payload) {
-  const base64 = typeof payload.voice_note_base64 === "string"
-    ? payload.voice_note_base64.trim()
-    : "";
+function uploadVoiceNote(userId, file, payload) {
+  cleanupExpiredVoiceNoteUploads();
+  if (!file) {
+    throw createHttpError(400, "voice_note file is required");
+  }
 
-  if (!base64) {
+  const duration = normalizeVoiceNoteDuration(payload.voice_note_duration_seconds);
+  const relativeFilePath = path.posix.join("voice-notes", file.filename);
+  const result = emailRepository.createVoiceNoteUpload(userId, {
+    file_name: file.originalname || file.filename,
+    file_path: relativeFilePath,
+    mime_type: file.mimetype,
+    size_bytes: file.size,
+    duration_seconds: duration,
+  });
+
+  return {
+    id: Number(result.lastInsertRowid),
+    file_name: file.originalname || file.filename,
+    url: `/uploads/${relativeFilePath}`,
+    mime_type: file.mimetype,
+    size_bytes: file.size,
+    duration_seconds: duration,
+  };
+}
+
+function getVoiceNoteUpload(payload, userId) {
+  if (
+    payload.voice_note_upload_id === undefined ||
+    payload.voice_note_upload_id === null ||
+    payload.voice_note_upload_id === ""
+  ) {
     return null;
   }
 
-  if (!ALLOWED_VOICE_NOTE_TYPES.has(payload.voice_note_mime_type)) {
-    throw createHttpError(
-      400,
-      "Only audio files (WebM, OGG, MP3, MP4, M4A, WAV) are allowed",
-    );
+  const uploadId = Number(payload.voice_note_upload_id);
+  if (!Number.isInteger(uploadId) || uploadId <= 0) {
+    throw createHttpError(400, "voice_note_upload_id must be a positive integer");
   }
 
-  const duration =
-    payload.voice_note_duration_seconds === undefined ||
-    payload.voice_note_duration_seconds === null
-      ? null
-      : Number(payload.voice_note_duration_seconds);
+  const upload = emailRepository.findVoiceNoteUploadById(uploadId, userId);
+  if (!upload) {
+    throw createHttpError(400, "Invalid voice_note_upload_id");
+  }
 
-  if (
-    duration !== null &&
-    (!Number.isFinite(duration) || duration < 0)
-  ) {
+  return upload;
+}
+
+function normalizeVoiceNoteDuration(rawDuration) {
+  if (rawDuration === undefined || rawDuration === null || rawDuration === "") {
+    return null;
+  }
+
+  const duration = Number(rawDuration);
+
+  if (!Number.isFinite(duration) || duration < 0) {
     throw createHttpError(400, "voice_note_duration_seconds must be valid");
   }
 
-  if (duration !== null && duration > MAX_VOICE_NOTE_DURATION_SECONDS) {
+  if (duration > MAX_VOICE_NOTE_DURATION_SECONDS) {
     throw createHttpError(
       400,
       `Voice note cannot be longer than ${MAX_VOICE_NOTE_DURATION_SECONDS} seconds`,
     );
   }
 
-  let buffer;
-  try {
-    buffer = Buffer.from(base64, "base64");
-  } catch {
-    throw createHttpError(400, "Invalid voice note payload");
-  }
-
-  if (!buffer.length) {
-    throw createHttpError(400, "Invalid voice note payload");
-  }
-
-  if (buffer.length > MAX_VOICE_NOTE_SIZE_BYTES) {
-    throw createHttpError(
-      400,
-      `Voice note file too large. Maximum size is ${Math.floor(MAX_VOICE_NOTE_SIZE_BYTES / (1024 * 1024))}MB`,
-    );
-  }
-
-  const extension =
-    path.extname(payload.voice_note_file_name || "").toLowerCase() ||
-    getExtensionFromMimeType(payload.voice_note_mime_type);
-
-  return {
-    buffer,
-    file_name: payload.voice_note_file_name || `voice-note${extension}`,
-    mime_type: payload.voice_note_mime_type,
-    size_bytes: buffer.length,
-    duration_seconds: duration,
-    stored_file_name: `${Date.now()}-${Math.round(Math.random() * 1e9)}${extension}`,
-  };
-}
-
-function getExtensionFromMimeType(mimeType) {
-  const mimeToExt = {
-    "audio/webm": ".webm",
-    "audio/ogg": ".ogg",
-    "audio/mpeg": ".mp3",
-    "audio/mp4": ".mp4",
-    "audio/x-m4a": ".m4a",
-    "audio/wav": ".wav",
-    "audio/x-wav": ".wav",
-  };
-
-  return mimeToExt[mimeType] || "";
+  return duration;
 }
 
 function getInbox(userId) {
@@ -381,5 +373,6 @@ module.exports = {
   searchEmails,
   sendEmail,
   toggleStar,
+  uploadVoiceNote,
   updateReadStatus,
 };

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
-import type { SendEmailResponse, User } from "@/types";
+import type { SendEmailResponse, User, VoiceNoteUploadResponse } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -48,24 +48,6 @@ function parseRecipients(input: string) {
     .filter(Boolean);
 }
 
-async function blobToBase64(blob: Blob) {
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result;
-      if (typeof result !== "string") {
-        reject(new Error("Failed to read recording"));
-        return;
-      }
-
-      const [, base64 = ""] = result.split(",");
-      resolve(base64);
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
-
 export default function Compose() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -77,6 +59,7 @@ export default function Compose() {
   const [selectedRecipients, setSelectedRecipients] = useState<string[]>([]);
   const [recipientError, setRecipientError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isUploadingVoiceNote, setIsUploadingVoiceNote] = useState(false);
   const [voiceNote, setVoiceNote] = useState<RecordedVoiceNote | null>(null);
   const [isRecorderSupported] = useState(
     typeof window !== "undefined" &&
@@ -110,10 +93,7 @@ export default function Compose() {
       subject: string;
       body: string;
       reply_to_id?: string | null;
-      voice_note_base64?: string;
-      voice_note_mime_type?: string;
-      voice_note_file_name?: string;
-      voice_note_duration_seconds?: number | null;
+      voice_note_upload_id?: number;
     }) => api.post<SendEmailResponse>("/emails", data).then((res) => res.data),
     onSuccess: (result) => {
       if (result.failed_recipients.length > 0) {
@@ -305,10 +285,7 @@ export default function Compose() {
       subject: string;
       body: string;
       reply_to_id?: string | null;
-      voice_note_base64?: string;
-      voice_note_mime_type?: string;
-      voice_note_file_name?: string;
-      voice_note_duration_seconds?: number | null;
+      voice_note_upload_id?: number;
     } =
       recipients.length === 1
         ? {
@@ -324,18 +301,33 @@ export default function Compose() {
             reply_to_id: null,
           };
 
-    try {
-      if (voiceNote) {
-        payload.voice_note_base64 = await blobToBase64(voiceNote.blob);
-        payload.voice_note_mime_type = voiceNote.mimeType;
-        payload.voice_note_file_name = voiceNote.fileName;
-        payload.voice_note_duration_seconds = voiceNote.durationSeconds;
-      }
+    if (voiceNote) {
+      try {
+        setIsUploadingVoiceNote(true);
+        const formData = new FormData();
+        formData.append("voice_note", voiceNote.blob, voiceNote.fileName);
+        if (voiceNote.durationSeconds !== null) {
+          formData.append(
+            "voice_note_duration_seconds",
+            String(voiceNote.durationSeconds),
+          );
+        }
 
-      mutation.mutate(payload);
-    } catch {
-      toast.error("Failed to prepare voice note for upload");
+        const uploadResponse = await api.post<VoiceNoteUploadResponse>(
+          "/emails/voice-note-upload",
+          formData,
+        );
+
+        payload.voice_note_upload_id = uploadResponse.data.id;
+      } catch {
+        toast.error("Failed to upload voice note");
+        return;
+      } finally {
+        setIsUploadingVoiceNote(false);
+      }
     }
+
+    await mutation.mutateAsync(payload);
   };
 
   return (
@@ -495,7 +487,9 @@ export default function Compose() {
                       variant="outline"
                       className="gap-2"
                       onClick={startRecording}
-                      disabled={!isRecorderSupported || mutation.isPending}
+                      disabled={
+                        !isRecorderSupported || mutation.isPending || isUploadingVoiceNote
+                      }
                     >
                       <Mic size={16} />
                       {voiceNote ? "Re-record" : "Record"}
@@ -528,6 +522,7 @@ export default function Compose() {
                         size="sm"
                         className="gap-2"
                         onClick={clearVoiceNote}
+                        disabled={isUploadingVoiceNote || mutation.isPending}
                       >
                         <Trash2 size={14} />
                         Remove
@@ -541,10 +536,14 @@ export default function Compose() {
                 <Button
                   type="submit"
                   className="gap-2"
-                  disabled={mutation.isPending || isRecording}
+                  disabled={mutation.isPending || isRecording || isUploadingVoiceNote}
                 >
                   <Send size={16} />
-                  {mutation.isPending ? "Sending..." : "Send"}
+                  {isUploadingVoiceNote
+                    ? "Uploading voice note..."
+                    : mutation.isPending
+                      ? "Sending..."
+                      : "Send"}
                 </Button>
               </div>
             </form>

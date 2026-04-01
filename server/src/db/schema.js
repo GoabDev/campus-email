@@ -34,6 +34,18 @@ const schemaSql = `
     FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS voice_note_uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uploaded_by_user_id INTEGER NOT NULL,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    duration_seconds REAL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (uploaded_by_user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS user_email_metadata (
     user_id INTEGER NOT NULL,
     email_id INTEGER NOT NULL,
@@ -56,6 +68,7 @@ const indexSql = `
   CREATE INDEX IF NOT EXISTS idx_uem_starred ON user_email_metadata(user_id, is_starred);
   CREATE INDEX IF NOT EXISTS idx_uem_deleted ON user_email_metadata(user_id, is_deleted);
   CREATE INDEX IF NOT EXISTS idx_voice_notes_email ON email_voice_notes(email_id);
+  CREATE INDEX IF NOT EXISTS idx_voice_note_uploads_user ON voice_note_uploads(uploaded_by_user_id);
 `;
 
 module.exports = {

@@ -102,6 +102,52 @@ function createVoiceNotes(emailIds, voiceNote) {
   insertMany(emailIds);
 }
 
+function createVoiceNoteUpload(userId, voiceNote) {
+  return db
+    .prepare(
+      `INSERT INTO voice_note_uploads (
+        uploaded_by_user_id,
+        file_name,
+        file_path,
+        mime_type,
+        size_bytes,
+        duration_seconds
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      userId,
+      voiceNote.file_name,
+      voiceNote.file_path,
+      voiceNote.mime_type,
+      voiceNote.size_bytes,
+      voiceNote.duration_seconds,
+    );
+}
+
+function findVoiceNoteUploadById(uploadId, userId) {
+  return db
+    .prepare(
+      `SELECT *
+       FROM voice_note_uploads
+       WHERE id = ? AND uploaded_by_user_id = ?`,
+    )
+    .get(uploadId, userId);
+}
+
+function findExpiredVoiceNoteUploads(maxAgeHours) {
+  return db
+    .prepare(
+      `SELECT *
+       FROM voice_note_uploads
+       WHERE created_at <= datetime('now', ?)`,
+    )
+    .all(`-${maxAgeHours} hours`);
+}
+
+function deleteVoiceNoteUpload(uploadId) {
+  return db.prepare("DELETE FROM voice_note_uploads WHERE id = ?").run(uploadId);
+}
+
 function findInboxByUserId(userId) {
   return serializeEmails(
     db
@@ -357,7 +403,9 @@ module.exports = {
   countUnreadByUserId,
   createEmail,
   createEmails,
+  createVoiceNoteUpload,
   createVoiceNotes,
+  deleteVoiceNoteUpload,
   findByIdForUser,
   findInboxByUserId,
   findOwnership,
@@ -366,6 +414,8 @@ module.exports = {
   findStarredByUserId,
   findThreadForUser,
   findTrashByUserId,
+  findExpiredVoiceNoteUploads,
+  findVoiceNoteUploadById,
   markAsRead,
   searchByUserId,
   updateReadStatus,

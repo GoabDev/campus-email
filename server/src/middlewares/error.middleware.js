@@ -11,6 +11,12 @@ function notFound(req, res, next) {
 function errorHandler(err, req, res, next) {
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
+      if (err.field === "voice_note") {
+        return res
+          .status(400)
+          .json({ error: "Voice note file too large. Maximum size is 10MB" });
+      }
+
       return res
         .status(400)
         .json({ error: "File too large. Maximum size is 5MB" });
@@ -19,7 +25,11 @@ function errorHandler(err, req, res, next) {
     return res.status(400).json({ error: err.message });
   }
 
-  if (err.message && err.message.includes("Only image files")) {
+  if (
+    err.message &&
+    (err.message.includes("Only image files") ||
+      err.message.includes("Only audio files"))
+  ) {
     return res.status(400).json({ error: err.message });
   }
 
