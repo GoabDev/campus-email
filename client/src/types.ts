@@ -5,6 +5,14 @@ export interface User {
   avatar: string | null;
 }
 
+export interface VoiceNote {
+  file_name: string;
+  url: string;
+  mime_type: string;
+  size_bytes: number;
+  duration_seconds: number | null;
+}
+
 export interface Email {
   id: number;
   from_user_id: number;
@@ -20,6 +28,7 @@ export interface Email {
   to_name?: string;
   to_email?: string;
   deleted_at?: string;
+  voice_note: VoiceNote | null;
 }
 
 export interface AuthResponse {

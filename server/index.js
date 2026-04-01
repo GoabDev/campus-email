@@ -9,14 +9,104 @@ const db = require("./database");
 
 const app = express();
 const JWT_SECRET = "campus-mail-secret-key"; // In production, use environment variable
+const MAX_VOICE_NOTE_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_VOICE_NOTE_DURATION_SECONDS = 300;
+const ALLOWED_VOICE_NOTE_TYPES = new Set([
+  "audio/webm",
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/wav",
+  "audio/x-wav",
+]);
 
 // Ensure upload directories exist
-const uploadDir = path.join(__dirname, "uploads", "avatars");
-fs.mkdirSync(uploadDir, { recursive: true });
+const avatarUploadDir = path.join(__dirname, "uploads", "avatars");
+const voiceNoteUploadDir = path.join(__dirname, "uploads", "voice-notes");
+fs.mkdirSync(avatarUploadDir, { recursive: true });
+fs.mkdirSync(voiceNoteUploadDir, { recursive: true });
+
+function getExtensionFromMimeType(mimeType) {
+  const mimeToExt = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/x-m4a": ".m4a",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+  };
+
+  return mimeToExt[mimeType] || "";
+}
+
+function removeUploadedFile(file) {
+  if (!file?.path) return;
+
+  try {
+    if (fs.existsSync(file.path)) {
+      fs.unlinkSync(file.path);
+    }
+  } catch (error) {
+    console.error("Failed to remove uploaded file:", error);
+  }
+}
+
+function parseVoiceNoteDuration(rawDuration) {
+  if (rawDuration === undefined || rawDuration === null || rawDuration === "") {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(rawDuration);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return Math.round(parsed * 100) / 100;
+}
+
+function serializeEmail(email) {
+  const {
+    voice_note_file_name,
+    voice_note_file_path,
+    voice_note_mime_type,
+    voice_note_size_bytes,
+    voice_note_duration_seconds,
+    ...rest
+  } = email;
+
+  return {
+    ...rest,
+    voice_note: voice_note_file_path
+      ? {
+          file_name: voice_note_file_name,
+          url: `/uploads/${String(voice_note_file_path).replace(/\\/g, "/")}`,
+          mime_type: voice_note_mime_type,
+          size_bytes: voice_note_size_bytes,
+          duration_seconds: voice_note_duration_seconds,
+        }
+      : null,
+  };
+}
+
+function serializeEmails(emails) {
+  return emails.map(serializeEmail);
+}
+
+const VOICE_NOTE_SELECT = `
+           evn.file_name as voice_note_file_name,
+           evn.file_path as voice_note_file_path,
+           evn.mime_type as voice_note_mime_type,
+           evn.size_bytes as voice_note_size_bytes,
+           evn.duration_seconds as voice_note_duration_seconds`;
+
+const EMAIL_VOICE_NOTE_JOIN =
+  "LEFT JOIN email_voice_notes evn ON evn.email_id = emails.id";
 
 // Multer configuration for avatar uploads
 const avatarStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
+  destination: (req, file, cb) => cb(null, avatarUploadDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `${req.user.id}-${Date.now()}${ext}`);
@@ -117,43 +207,131 @@ app.post("/api/login", (req, res) => {
 
 // Send email
 app.post("/api/emails", authenticate, (req, res) => {
-  const { to_email, subject, body, reply_to_id } = req.body;
+  const toEmail = req.body.to_email?.trim();
+  const subject = req.body.subject?.trim();
+  const body = typeof req.body.body === "string" ? req.body.body : "";
+  const hasBody = body.trim().length > 0;
+  const replyToId = req.body.reply_to_id
+    ? Number.parseInt(req.body.reply_to_id, 10)
+    : null;
+  const voiceNoteBase64 = req.body.voice_note_base64;
+  const voiceNoteMimeType = req.body.voice_note_mime_type;
+  const voiceNoteFileName = req.body.voice_note_file_name;
+  const voiceNoteDuration = parseVoiceNoteDuration(
+    req.body.voice_note_duration_seconds,
+  );
+  const hasVoiceNote =
+    typeof voiceNoteBase64 === "string" && voiceNoteBase64.trim().length > 0;
 
-  if (!to_email || !subject || !body) {
-    return res
-      .status(400)
-      .json({ error: "to_email, subject, and body are required" });
+  if (!toEmail || !subject || (!hasBody && !hasVoiceNote)) {
+    return res.status(400).json({
+      error: "to_email, subject, and either body or voice note are required",
+    });
+  }
+
+  if (hasVoiceNote && !ALLOWED_VOICE_NOTE_TYPES.has(voiceNoteMimeType)) {
+    return res.status(400).json({
+      error: "Only audio files (WebM, OGG, MP3, MP4, M4A, WAV) are allowed",
+    });
+  }
+
+  if (
+    voiceNoteDuration !== null &&
+    voiceNoteDuration > MAX_VOICE_NOTE_DURATION_SECONDS
+  ) {
+    return res.status(400).json({
+      error: `Voice note cannot be longer than ${MAX_VOICE_NOTE_DURATION_SECONDS} seconds`,
+    });
   }
 
   const recipient = db
     .prepare("SELECT id FROM users WHERE email = ?")
-    .get(to_email);
+    .get(toEmail);
   if (!recipient) return res.status(400).json({ error: "Recipient not found" });
 
   if (recipient.id === req.user.id) {
     return res.status(400).json({ error: "Cannot send email to yourself" });
   }
 
-  // If replying, verify the parent email exists and user has access
-  if (reply_to_id) {
-    const role = getUserEmailRole(reply_to_id, req.user.id);
+  if (replyToId) {
+    const role = getUserEmailRole(replyToId, req.user.id);
     if (!role) {
       return res.status(400).json({ error: "Invalid reply_to_id" });
     }
   }
 
-  const stmt = db.prepare(
-    "INSERT INTO emails (from_user_id, to_user_id, subject, body, reply_to_id) VALUES (?, ?, ?, ?, ?)",
-  );
-  const result = stmt.run(
-    req.user.id,
-    recipient.id,
-    subject,
-    body,
-    reply_to_id || null,
-  );
+  let savedVoiceNotePath = null;
+  let savedVoiceNoteName = null;
+  let savedVoiceNoteSize = null;
 
-  res.json({ message: "Email sent", emailId: result.lastInsertRowid });
+  if (hasVoiceNote) {
+    try {
+      const audioBuffer = Buffer.from(voiceNoteBase64, "base64");
+      if (!audioBuffer.length) {
+        return res.status(400).json({ error: "Invalid voice note payload" });
+      }
+
+      if (audioBuffer.length > MAX_VOICE_NOTE_SIZE_BYTES) {
+        return res.status(400).json({
+          error: `Voice note file too large. Maximum size is ${Math.floor(MAX_VOICE_NOTE_SIZE_BYTES / (1024 * 1024))}MB`,
+        });
+      }
+
+      const extension =
+        path.extname(voiceNoteFileName || "").toLowerCase() ||
+        getExtensionFromMimeType(voiceNoteMimeType);
+      savedVoiceNoteName = `${req.user.id}-${Date.now()}-${Math.round(Math.random() * 1e9)}${extension}`;
+      savedVoiceNotePath = path.join(voiceNoteUploadDir, savedVoiceNoteName);
+      fs.writeFileSync(savedVoiceNotePath, audioBuffer);
+      savedVoiceNoteSize = audioBuffer.length;
+    } catch (error) {
+      removeUploadedFile(savedVoiceNotePath ? { path: savedVoiceNotePath } : null);
+      return res.status(400).json({ error: "Invalid voice note payload" });
+    }
+  }
+
+  try {
+    const result = db.transaction(() => {
+      const stmt = db.prepare(
+        "INSERT INTO emails (from_user_id, to_user_id, subject, body, reply_to_id) VALUES (?, ?, ?, ?, ?)",
+      );
+      const emailResult = stmt.run(
+        req.user.id,
+        recipient.id,
+        subject,
+        body,
+        replyToId || null,
+      );
+
+      if (savedVoiceNoteName && savedVoiceNotePath && voiceNoteMimeType) {
+        db.prepare(
+          `INSERT INTO email_voice_notes (
+            email_id,
+            file_name,
+            file_path,
+            mime_type,
+            size_bytes,
+            duration_seconds
+          ) VALUES (?, ?, ?, ?, ?, ?)`,
+        ).run(
+          emailResult.lastInsertRowid,
+          voiceNoteFileName || savedVoiceNoteName,
+          path.posix.join("voice-notes", savedVoiceNoteName),
+          voiceNoteMimeType,
+          savedVoiceNoteSize,
+          voiceNoteDuration,
+        );
+      }
+
+      return emailResult;
+    })();
+
+    res.json({ message: "Email sent", emailId: result.lastInsertRowid });
+  } catch (error) {
+    removeUploadedFile(savedVoiceNotePath ? { path: savedVoiceNotePath } : null);
+    console.error("Failed to send email:", error);
+    res.status(500).json({ error: "Failed to send email" });
+  }
 });
 
 // Get inbox (excludes deleted, includes starred)
@@ -162,10 +340,12 @@ app.get("/api/emails/inbox", authenticate, (req, res) => {
     .prepare(
       `
     SELECT emails.*, users.name as from_name, users.email as from_email,
-           COALESCE(uem.is_starred, 0) as is_starred
+           COALESCE(uem.is_starred, 0) as is_starred,
+           ${VOICE_NOTE_SELECT}
     FROM emails
     JOIN users ON emails.from_user_id = users.id
     LEFT JOIN user_email_metadata uem ON uem.email_id = emails.id AND uem.user_id = ?
+    ${EMAIL_VOICE_NOTE_JOIN}
     WHERE emails.to_user_id = ?
       AND COALESCE(uem.is_deleted, 0) = 0
     ORDER BY emails.created_at DESC
@@ -173,7 +353,7 @@ app.get("/api/emails/inbox", authenticate, (req, res) => {
     )
     .all(req.user.id, req.user.id);
 
-  res.json(emails);
+  res.json(serializeEmails(emails));
 });
 
 // Get sent emails (excludes deleted, includes starred)
@@ -182,10 +362,12 @@ app.get("/api/emails/sent", authenticate, (req, res) => {
     .prepare(
       `
     SELECT emails.*, users.name as to_name, users.email as to_email,
-           COALESCE(uem.is_starred, 0) as is_starred
+           COALESCE(uem.is_starred, 0) as is_starred,
+           ${VOICE_NOTE_SELECT}
     FROM emails
     JOIN users ON emails.to_user_id = users.id
     LEFT JOIN user_email_metadata uem ON uem.email_id = emails.id AND uem.user_id = ?
+    ${EMAIL_VOICE_NOTE_JOIN}
     WHERE emails.from_user_id = ?
       AND COALESCE(uem.is_deleted, 0) = 0
     ORDER BY emails.created_at DESC
@@ -193,7 +375,7 @@ app.get("/api/emails/sent", authenticate, (req, res) => {
     )
     .all(req.user.id, req.user.id);
 
-  res.json(emails);
+  res.json(serializeEmails(emails));
 });
 
 // Get starred emails
@@ -204,11 +386,13 @@ app.get("/api/emails/starred", authenticate, (req, res) => {
     SELECT emails.*,
            sender.name as from_name, sender.email as from_email,
            recipient.name as to_name, recipient.email as to_email,
-           1 as is_starred
+           1 as is_starred,
+           ${VOICE_NOTE_SELECT}
     FROM emails
     JOIN user_email_metadata uem ON uem.email_id = emails.id AND uem.user_id = ?
     JOIN users sender ON emails.from_user_id = sender.id
     JOIN users recipient ON emails.to_user_id = recipient.id
+    ${EMAIL_VOICE_NOTE_JOIN}
     WHERE uem.is_starred = 1
       AND uem.is_deleted = 0
       AND (emails.from_user_id = ? OR emails.to_user_id = ?)
@@ -217,7 +401,7 @@ app.get("/api/emails/starred", authenticate, (req, res) => {
     )
     .all(req.user.id, req.user.id, req.user.id);
 
-  res.json(emails);
+  res.json(serializeEmails(emails));
 });
 
 // Get trash
@@ -229,11 +413,13 @@ app.get("/api/emails/trash", authenticate, (req, res) => {
            sender.name as from_name, sender.email as from_email,
            recipient.name as to_name, recipient.email as to_email,
            COALESCE(uem.is_starred, 0) as is_starred,
-           uem.deleted_at
+           uem.deleted_at,
+           ${VOICE_NOTE_SELECT}
     FROM emails
     JOIN user_email_metadata uem ON uem.email_id = emails.id AND uem.user_id = ?
     JOIN users sender ON emails.from_user_id = sender.id
     JOIN users recipient ON emails.to_user_id = recipient.id
+    ${EMAIL_VOICE_NOTE_JOIN}
     WHERE uem.is_deleted = 1
       AND (emails.from_user_id = ? OR emails.to_user_id = ?)
     ORDER BY uem.deleted_at DESC
@@ -241,7 +427,7 @@ app.get("/api/emails/trash", authenticate, (req, res) => {
     )
     .all(req.user.id, req.user.id, req.user.id);
 
-  res.json(emails);
+  res.json(serializeEmails(emails));
 });
 
 // Search emails (paginated, server-side filtering)
@@ -296,11 +482,13 @@ app.get("/api/emails/search", authenticate, (req, res) => {
     SELECT emails.*,
            sender.name as from_name, sender.email as from_email,
            recipient.name as to_name, recipient.email as to_email,
-           COALESCE(uem.is_starred, 0) as is_starred
+           COALESCE(uem.is_starred, 0) as is_starred,
+           ${VOICE_NOTE_SELECT}
     FROM emails
     JOIN users sender ON emails.from_user_id = sender.id
     JOIN users recipient ON emails.to_user_id = recipient.id
     LEFT JOIN user_email_metadata uem ON uem.email_id = emails.id AND uem.user_id = ?
+    ${EMAIL_VOICE_NOTE_JOIN}
     WHERE ${folderCondition}
       AND COALESCE(uem.is_deleted, 0) = 0
       AND (emails.subject LIKE ? OR emails.body LIKE ? OR sender.name LIKE ? OR recipient.name LIKE ?)
@@ -320,7 +508,7 @@ app.get("/api/emails/search", authenticate, (req, res) => {
     );
 
   res.json({
-    emails,
+    emails: serializeEmails(emails),
     total: countResult.total,
     page: pageNum,
     limit: limitNum,
@@ -354,11 +542,13 @@ app.get("/api/emails/:id", authenticate, (req, res) => {
     SELECT emails.*,
            sender.name as from_name, sender.email as from_email,
            recipient.name as to_name, recipient.email as to_email,
-           COALESCE(uem.is_starred, 0) as is_starred
+           COALESCE(uem.is_starred, 0) as is_starred,
+           ${VOICE_NOTE_SELECT}
     FROM emails
     LEFT JOIN user_email_metadata uem ON uem.email_id = emails.id AND uem.user_id = ?
     JOIN users sender ON emails.from_user_id = sender.id
     JOIN users recipient ON emails.to_user_id = recipient.id
+    ${EMAIL_VOICE_NOTE_JOIN}
     WHERE emails.id = ? AND (emails.to_user_id = ? OR emails.from_user_id = ?)
   `,
     )
@@ -372,7 +562,7 @@ app.get("/api/emails/:id", authenticate, (req, res) => {
     email.is_read = 1;
   }
 
-  res.json(email);
+  res.json(serializeEmail(email));
 });
 
 // Get email thread (full conversation chain via recursive CTE)
@@ -404,19 +594,21 @@ app.get("/api/emails/:id/thread", authenticate, (req, res) => {
     SELECT emails.*,
            sender.name as from_name, sender.email as from_email,
            recipient.name as to_name, recipient.email as to_email,
-           COALESCE(uem.is_starred, 0) as is_starred
+           COALESCE(uem.is_starred, 0) as is_starred,
+           ${VOICE_NOTE_SELECT}
     FROM thread
     JOIN emails ON thread.id = emails.id
     JOIN users sender ON emails.from_user_id = sender.id
     JOIN users recipient ON emails.to_user_id = recipient.id
     LEFT JOIN user_email_metadata uem ON uem.email_id = emails.id AND uem.user_id = ?
+    ${EMAIL_VOICE_NOTE_JOIN}
     WHERE emails.from_user_id = ? OR emails.to_user_id = ?
     ORDER BY emails.created_at ASC
   `,
     )
     .all(emailId, req.user.id, req.user.id, req.user.id);
 
-  res.json(emails);
+  res.json(serializeEmails(emails));
 });
 
 // Toggle star
@@ -554,7 +746,7 @@ app.patch(
       .prepare("SELECT avatar FROM users WHERE id = ?")
       .get(req.user.id);
     if (user.avatar) {
-      const oldPath = path.join(uploadDir, user.avatar);
+      const oldPath = path.join(avatarUploadDir, user.avatar);
       if (fs.existsSync(oldPath)) {
         fs.unlinkSync(oldPath);
       }
@@ -577,7 +769,7 @@ app.delete("/api/users/avatar", authenticate, (req, res) => {
     .get(req.user.id);
 
   if (user.avatar) {
-    const avatarPath = path.join(uploadDir, user.avatar);
+    const avatarPath = path.join(avatarUploadDir, user.avatar);
     if (fs.existsSync(avatarPath)) {
       fs.unlinkSync(avatarPath);
     }

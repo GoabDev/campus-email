@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import type { Email } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowLeft, Reply, Clock, Star, Trash2 } from "lucide-react";
+import { ArrowLeft, Reply, Clock, Star, Trash2, Mic } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -78,6 +78,17 @@ function ThreadMessage({ email }: { email: Email }) {
       <div className="text-sm text-foreground leading-relaxed whitespace-pre-wrap pl-11">
         {email.body}
       </div>
+      {email.voice_note && (
+        <div className="pl-11 pt-3">
+          <div className="rounded-xl border border-border bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Mic size={14} />
+              Voice note
+            </div>
+            <audio controls src={email.voice_note.url} className="w-full" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -236,9 +247,23 @@ export default function ViewEmail() {
           <div className="border-t border-border" />
 
           <CardContent className="px-0 pt-6 pb-2">
-            <div className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
-              {email.body}
-            </div>
+            {email.body && (
+              <div className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+                {email.body}
+              </div>
+            )}
+
+            {email.voice_note && (
+              <div className={cn("space-y-2", email.body && "mt-5")}>
+                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  <Mic size={16} />
+                  Voice note
+                </div>
+                <div className="rounded-xl border border-border bg-muted/20 p-3">
+                  <audio controls src={email.voice_note.url} className="w-full" />
+                </div>
+              </div>
+            )}
           </CardContent>
 
           <div className="border-t border-border pt-4 mt-4">
