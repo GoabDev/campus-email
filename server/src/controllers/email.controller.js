@@ -16,6 +16,14 @@ function uploadVoiceNote(req, res, next) {
   }
 }
 
+function uploadAttachment(req, res, next) {
+  try {
+    return res.json(emailService.uploadAttachment(req.user.id, req.file, req.body));
+  } catch (error) {
+    return next(error);
+  }
+}
+
 function getInbox(req, res, next) {
   try {
     return res.json(emailService.getInbox(req.user.id));
@@ -127,6 +135,7 @@ module.exports = {
   searchEmails,
   sendEmail,
   toggleStar,
+  uploadAttachment,
   uploadVoiceNote,
   updateReadStatus,
 };

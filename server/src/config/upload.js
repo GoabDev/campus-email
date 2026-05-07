@@ -2,9 +2,14 @@ const fs = require("fs");
 const multer = require("multer");
 const path = require("path");
 const { uploadMaxFileSize } = require("./env");
-const { avatarsUploadPath, voiceNotesUploadPath } = require("./paths");
+const {
+  attachmentsUploadPath,
+  avatarsUploadPath,
+  voiceNotesUploadPath,
+} = require("./paths");
 
 const MAX_VOICE_NOTE_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_VOICE_NOTE_TYPES = new Set([
   "audio/webm",
   "audio/ogg",
@@ -14,8 +19,23 @@ const ALLOWED_VOICE_NOTE_TYPES = new Set([
   "audio/wav",
   "audio/x-wav",
 ]);
+const ALLOWED_ATTACHMENT_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain",
+]);
 
 fs.mkdirSync(avatarsUploadPath, { recursive: true });
+fs.mkdirSync(attachmentsUploadPath, { recursive: true });
 fs.mkdirSync(voiceNotesUploadPath, { recursive: true });
 
 const avatarStorage = multer.diskStorage({
@@ -54,6 +74,27 @@ function getExtensionFromMimeType(mimeType) {
   return mimeToExt[mimeType] || "";
 }
 
+function getAttachmentExtensionFromMimeType(mimeType) {
+  const mimeToExt = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+      ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+      ".pptx",
+    "text/plain": ".txt",
+  };
+
+  return mimeToExt[mimeType] || "";
+}
+
 const voiceNoteStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, voiceNotesUploadPath),
   filename: (req, file, cb) => {
@@ -82,8 +123,41 @@ const voiceNoteUpload = multer({
   },
 });
 
+const attachmentStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, attachmentsUploadPath),
+  filename: (req, file, cb) => {
+    const extension =
+      path.extname(file.originalname).toLowerCase() ||
+      getAttachmentExtensionFromMimeType(file.mimetype);
+    cb(
+      null,
+      `${req.user.id}-${Date.now()}-${Math.round(Math.random() * 1e9)}${extension}`,
+    );
+  },
+});
+
+const attachmentUpload = multer({
+  storage: attachmentStorage,
+  limits: { fileSize: MAX_ATTACHMENT_SIZE_BYTES },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_ATTACHMENT_TYPES.has(file.mimetype)) {
+      cb(null, true);
+      return;
+    }
+
+    cb(
+      new Error(
+        "Only image, PDF, Word, Excel, PowerPoint, and TXT attachments are allowed",
+      ),
+    );
+  },
+});
+
 module.exports = {
+  ALLOWED_ATTACHMENT_TYPES,
+  MAX_ATTACHMENT_SIZE_BYTES,
   avatarUpload,
+  attachmentUpload,
   voiceNoteUpload,
   MAX_VOICE_NOTE_SIZE_BYTES,
 };

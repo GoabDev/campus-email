@@ -1,14 +1,20 @@
 const emailRepository = require("../repositories/email.repository");
 const metadataRepository = require("../repositories/user-email-metadata.repository");
 const userRepository = require("../repositories/user.repository");
-const { voiceNotesUploadPath } = require("../config/paths");
+const {
+  attachmentsUploadPath,
+  voiceNotesUploadPath,
+} = require("../config/paths");
 const { createHttpError } = require("../utils/http-error");
 const fs = require("fs");
 const path = require("path");
 const MAX_BULK_RECIPIENTS = 50;
-const MAX_VOICE_NOTE_DURATION_SECONDS = 300;
+const MAX_VOICE_NOTE_DURATION_SECONDS = 60;
+const MAX_ATTACHMENTS_PER_EMAIL = 5;
+const MAX_ATTACHMENTS_TOTAL_SIZE_BYTES = 25 * 1024 * 1024;
 const VOICE_NOTE_UPLOAD_TTL_HOURS = 24;
 
+fs.mkdirSync(attachmentsUploadPath, { recursive: true });
 fs.mkdirSync(voiceNotesUploadPath, { recursive: true });
 
 function cleanupExpiredVoiceNoteUploads() {
@@ -26,6 +32,24 @@ function cleanupExpiredVoiceNoteUploads() {
     } catch {}
 
     emailRepository.deleteVoiceNoteUpload(upload.id);
+  });
+}
+
+function cleanupExpiredAttachmentUploads() {
+  const expiredUploads =
+    emailRepository.findExpiredAttachmentUploads(VOICE_NOTE_UPLOAD_TTL_HOURS);
+
+  expiredUploads.forEach((upload) => {
+    const fileName = path.basename(String(upload.file_path || ""));
+    const absoluteFilePath = path.join(attachmentsUploadPath, fileName);
+
+    try {
+      if (fileName && fs.existsSync(absoluteFilePath)) {
+        fs.unlinkSync(absoluteFilePath);
+      }
+    } catch {}
+
+    emailRepository.deleteAttachmentUpload(upload.id);
   });
 }
 
@@ -47,17 +71,36 @@ function getUserEmailRole(emailId, userId) {
   return null;
 }
 
+function deleteUploadedFile(uploadPath, file) {
+  const fileName = path.basename(String(file?.filename || ""));
+  const absoluteFilePath = fileName
+    ? path.join(uploadPath, fileName)
+    : null;
+
+  try {
+    if (absoluteFilePath && fs.existsSync(absoluteFilePath)) {
+      fs.unlinkSync(absoluteFilePath);
+    }
+  } catch {}
+}
+
 function sendEmail(userId, payload) {
   cleanupExpiredVoiceNoteUploads();
+  cleanupExpiredAttachmentUploads();
   const { subject, reply_to_id } = payload;
   const body = typeof payload.body === "string" ? payload.body : "";
   const recipients = normalizeRecipients(payload);
   const voiceNoteUpload = getVoiceNoteUpload(payload, userId);
+  const attachmentUploads = getAttachmentUploads(payload, userId);
 
-  if (!recipients.length || !subject || (!body.trim() && !voiceNoteUpload)) {
+  if (
+    !recipients.length ||
+    !subject ||
+    (!body.trim() && !voiceNoteUpload && attachmentUploads.length === 0)
+  ) {
     throw createHttpError(
       400,
-      "recipient, subject, and either body or voice note are required",
+      "recipient, subject, and either body, voice note, or attachment are required",
     );
   }
 
@@ -136,6 +179,22 @@ function sendEmail(userId, payload) {
       emailRepository.deleteVoiceNoteUpload(voiceNoteUpload.id);
     }
 
+    if (attachmentUploads.length > 0) {
+      emailRepository.createAttachments(
+        emailIds,
+        attachmentUploads.map((attachment) => ({
+          file_name: attachment.file_name,
+          file_path: attachment.file_path,
+          mime_type: attachment.mime_type,
+          size_bytes: attachment.size_bytes,
+          original_size_bytes: attachment.original_size_bytes,
+        })),
+      );
+      attachmentUploads.forEach((attachment) => {
+        emailRepository.deleteAttachmentUpload(attachment.id);
+      });
+    }
+
     return {
       message:
         failedRecipients.length > 0
@@ -178,24 +237,63 @@ function uploadVoiceNote(userId, file, payload) {
     throw createHttpError(400, "voice_note file is required");
   }
 
-  const duration = normalizeVoiceNoteDuration(payload.voice_note_duration_seconds);
-  const relativeFilePath = path.posix.join("voice-notes", file.filename);
-  const result = emailRepository.createVoiceNoteUpload(userId, {
-    file_name: file.originalname || file.filename,
-    file_path: relativeFilePath,
-    mime_type: file.mimetype,
-    size_bytes: file.size,
-    duration_seconds: duration,
-  });
+  try {
+    const duration = normalizeVoiceNoteDuration(payload.voice_note_duration_seconds);
+    const relativeFilePath = path.posix.join("voice-notes", file.filename);
+    const result = emailRepository.createVoiceNoteUpload(userId, {
+      file_name: file.originalname || file.filename,
+      file_path: relativeFilePath,
+      mime_type: file.mimetype,
+      size_bytes: file.size,
+      duration_seconds: duration,
+    });
 
-  return {
-    id: Number(result.lastInsertRowid),
-    file_name: file.originalname || file.filename,
-    url: `/uploads/${relativeFilePath}`,
-    mime_type: file.mimetype,
-    size_bytes: file.size,
-    duration_seconds: duration,
-  };
+    return {
+      id: Number(result.lastInsertRowid),
+      file_name: file.originalname || file.filename,
+      url: `/uploads/${relativeFilePath}`,
+      mime_type: file.mimetype,
+      size_bytes: file.size,
+      duration_seconds: duration,
+    };
+  } catch (error) {
+    deleteUploadedFile(voiceNotesUploadPath, file);
+    throw error;
+  }
+}
+
+function uploadAttachment(userId, file, payload) {
+  cleanupExpiredAttachmentUploads();
+  if (!file) {
+    throw createHttpError(400, "attachment file is required");
+  }
+
+  try {
+    const originalSize = normalizeAttachmentOriginalSize(
+      payload.attachment_original_size_bytes,
+      file.size,
+    );
+    const relativeFilePath = path.posix.join("attachments", file.filename);
+    const result = emailRepository.createAttachmentUpload(userId, {
+      file_name: file.originalname || file.filename,
+      file_path: relativeFilePath,
+      mime_type: file.mimetype,
+      size_bytes: file.size,
+      original_size_bytes: originalSize,
+    });
+
+    return {
+      id: Number(result.lastInsertRowid),
+      file_name: file.originalname || file.filename,
+      url: `/uploads/${relativeFilePath}`,
+      mime_type: file.mimetype,
+      size_bytes: file.size,
+      original_size_bytes: originalSize,
+    };
+  } catch (error) {
+    deleteUploadedFile(attachmentsUploadPath, file);
+    throw error;
+  }
 }
 
 function getVoiceNoteUpload(payload, userId) {
@@ -220,6 +318,42 @@ function getVoiceNoteUpload(payload, userId) {
   return upload;
 }
 
+function getAttachmentUploads(payload, userId) {
+  if (!Array.isArray(payload.attachment_upload_ids)) {
+    return [];
+  }
+
+  if (payload.attachment_upload_ids.length > MAX_ATTACHMENTS_PER_EMAIL) {
+    throw createHttpError(
+      400,
+      `You can attach at most ${MAX_ATTACHMENTS_PER_EMAIL} files`,
+    );
+  }
+
+  const attachmentUploads = payload.attachment_upload_ids.map((uploadId) => {
+    const upload = emailRepository.findAttachmentUploadById(Number(uploadId), userId);
+
+    if (!upload) {
+      throw createHttpError(400, `Invalid attachment_upload_id: ${uploadId}`);
+    }
+
+    return upload;
+  });
+  const totalAttachmentSize = attachmentUploads.reduce(
+    (sum, attachment) => sum + Number(attachment.size_bytes || 0),
+    0,
+  );
+
+  if (totalAttachmentSize > MAX_ATTACHMENTS_TOTAL_SIZE_BYTES) {
+    throw createHttpError(
+      400,
+      "Attachments cannot be larger than 25MB total",
+    );
+  }
+
+  return attachmentUploads;
+}
+
 function normalizeVoiceNoteDuration(rawDuration) {
   if (rawDuration === undefined || rawDuration === null || rawDuration === "") {
     return null;
@@ -239,6 +373,27 @@ function normalizeVoiceNoteDuration(rawDuration) {
   }
 
   return duration;
+}
+
+function normalizeAttachmentOriginalSize(rawSize, uploadedSize) {
+  if (rawSize === undefined || rawSize === null || rawSize === "") {
+    return uploadedSize;
+  }
+
+  const size = Number(rawSize);
+
+  if (!Number.isInteger(size) || size <= 0) {
+    throw createHttpError(400, "attachment_original_size_bytes must be valid");
+  }
+
+  if (size < uploadedSize) {
+    throw createHttpError(
+      400,
+      "attachment_original_size_bytes cannot be smaller than the uploaded file size",
+    );
+  }
+
+  return size;
 }
 
 function getInbox(userId) {
@@ -373,6 +528,7 @@ module.exports = {
   searchEmails,
   sendEmail,
   toggleStar,
+  uploadAttachment,
   uploadVoiceNote,
   updateReadStatus,
 };

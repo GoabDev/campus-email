@@ -1,9 +1,10 @@
 const express = require("express");
 const emailController = require("../controllers/email.controller");
-const { voiceNoteUpload } = require("../config/upload");
+const { attachmentUpload, voiceNoteUpload } = require("../config/upload");
 const { authenticate } = require("../middlewares/auth.middleware");
 const { validateRequest } = require("../middlewares/validation.middleware");
 const {
+  validateAttachmentUploadRequest,
   validateComposeRequest,
   validateEmailIdParam,
   validateReadStatusRequest,
@@ -15,6 +16,12 @@ const router = express.Router();
 
 router.use(authenticate);
 
+router.post(
+  "/attachment-upload",
+  attachmentUpload.single("attachment"),
+  validateRequest(validateAttachmentUploadRequest),
+  emailController.uploadAttachment,
+);
 router.post(
   "/voice-note-upload",
   voiceNoteUpload.single("voice_note"),

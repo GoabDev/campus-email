@@ -1,10 +1,20 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
-import type { Email } from "@/types";
+import type { Attachment, Email } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowLeft, Reply, Clock, Star, Trash2, Mic } from "lucide-react";
+import {
+  ArrowLeft,
+  Clock,
+  Download,
+  File,
+  FileImage,
+  Mic,
+  Reply,
+  Star,
+  Trash2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -27,6 +37,76 @@ function formatFullDate(dateStr: string) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatFileSize(sizeBytes: number) {
+  if (sizeBytes >= 1024 * 1024) {
+    return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  if (sizeBytes >= 1024) {
+    return `${Math.round(sizeBytes / 1024)} KB`;
+  }
+
+  return `${sizeBytes} B`;
+}
+
+function isImageAttachment(attachment: Attachment) {
+  return attachment.mime_type.startsWith("image/");
+}
+
+function AttachmentList({ attachments }: { attachments: Attachment[] }) {
+  if (!attachments.length) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <File size={16} />
+        Attachments
+      </div>
+      <div className="space-y-2">
+        {attachments.map((attachment) => (
+          <a
+            key={`${attachment.id ?? attachment.file_name}-${attachment.url}`}
+            href={attachment.url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 p-3 transition-colors hover:bg-muted/35"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-background text-muted-foreground shrink-0 overflow-hidden">
+                {isImageAttachment(attachment) ? (
+                  <img
+                    src={attachment.url}
+                    alt={attachment.file_name}
+                    className="h-full w-full object-cover"
+                  />
+                ) : attachment.mime_type.startsWith("image/") ? (
+                  <FileImage size={18} />
+                ) : (
+                  <File size={18} />
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground">
+                  {attachment.file_name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {formatFileSize(attachment.size_bytes)}
+                </p>
+              </div>
+            </div>
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground shrink-0">
+              <Download size={12} />
+              Open
+            </span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ViewEmailSkeleton() {
@@ -87,6 +167,11 @@ function ThreadMessage({ email }: { email: Email }) {
             </div>
             <audio controls src={email.voice_note.url} className="w-full" />
           </div>
+        </div>
+      )}
+      {email.attachments.length > 0 && (
+        <div className="pl-11 pt-3">
+          <AttachmentList attachments={email.attachments} />
         </div>
       )}
     </div>
@@ -262,6 +347,17 @@ export default function ViewEmail() {
                 <div className="rounded-xl border border-border bg-muted/20 p-3">
                   <audio controls src={email.voice_note.url} className="w-full" />
                 </div>
+              </div>
+            )}
+
+            {email.attachments.length > 0 && (
+              <div
+                className={cn(
+                  "space-y-2",
+                  (email.body || email.voice_note) && "mt-5",
+                )}
+              >
+                <AttachmentList attachments={email.attachments} />
               </div>
             )}
           </CardContent>

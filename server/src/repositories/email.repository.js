@@ -31,11 +31,55 @@ function serializeEmail(email) {
           duration_seconds: voice_note_duration_seconds,
         }
       : null,
+    attachments: [],
   };
 }
 
 function serializeEmails(emails) {
-  return emails.map(serializeEmail);
+  const serializedEmails = emails.map(serializeEmail);
+  attachAttachments(serializedEmails);
+  return serializedEmails;
+}
+
+function serializeAttachment(attachment) {
+  return {
+    id: attachment.id,
+    file_name: attachment.file_name,
+    url: `/uploads/${String(attachment.file_path).replace(/\\/g, "/")}`,
+    mime_type: attachment.mime_type,
+    size_bytes: attachment.size_bytes,
+    original_size_bytes: attachment.original_size_bytes,
+  };
+}
+
+function attachAttachments(emails) {
+  if (!emails.length) {
+    return emails;
+  }
+
+  const emailIds = emails.map((email) => email.id);
+  const placeholders = emailIds.map(() => "?").join(", ");
+  const attachments = db
+    .prepare(
+      `SELECT *
+       FROM email_attachments
+       WHERE email_id IN (${placeholders})
+       ORDER BY id ASC`,
+    )
+    .all(...emailIds);
+  const attachmentsByEmailId = new Map();
+
+  attachments.forEach((attachment) => {
+    const current = attachmentsByEmailId.get(attachment.email_id) || [];
+    current.push(serializeAttachment(attachment));
+    attachmentsByEmailId.set(attachment.email_id, current);
+  });
+
+  emails.forEach((email) => {
+    email.attachments = attachmentsByEmailId.get(email.id) || [];
+  });
+
+  return emails;
 }
 
 function findOwnership(emailId) {
@@ -102,6 +146,36 @@ function createVoiceNotes(emailIds, voiceNote) {
   insertMany(emailIds);
 }
 
+function createAttachments(emailIds, attachments) {
+  const insertAttachment = db.prepare(
+    `INSERT INTO email_attachments (
+      email_id,
+      file_name,
+      file_path,
+      mime_type,
+      size_bytes,
+      original_size_bytes
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+
+  const insertMany = db.transaction((ids, rows) => {
+    ids.forEach((emailId) => {
+      rows.forEach((attachment) => {
+        insertAttachment.run(
+          emailId,
+          attachment.file_name,
+          attachment.file_path,
+          attachment.mime_type,
+          attachment.size_bytes,
+          attachment.original_size_bytes ?? null,
+        );
+      });
+    });
+  });
+
+  insertMany(emailIds, attachments);
+}
+
 function createVoiceNoteUpload(userId, voiceNote) {
   return db
     .prepare(
@@ -121,6 +195,28 @@ function createVoiceNoteUpload(userId, voiceNote) {
       voiceNote.mime_type,
       voiceNote.size_bytes,
       voiceNote.duration_seconds,
+    );
+}
+
+function createAttachmentUpload(userId, attachment) {
+  return db
+    .prepare(
+      `INSERT INTO attachment_uploads (
+        uploaded_by_user_id,
+        file_name,
+        file_path,
+        mime_type,
+        size_bytes,
+        original_size_bytes
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      userId,
+      attachment.file_name,
+      attachment.file_path,
+      attachment.mime_type,
+      attachment.size_bytes,
+      attachment.original_size_bytes ?? null,
     );
 }
 
@@ -146,6 +242,30 @@ function findExpiredVoiceNoteUploads(maxAgeHours) {
 
 function deleteVoiceNoteUpload(uploadId) {
   return db.prepare("DELETE FROM voice_note_uploads WHERE id = ?").run(uploadId);
+}
+
+function findAttachmentUploadById(uploadId, userId) {
+  return db
+    .prepare(
+      `SELECT *
+       FROM attachment_uploads
+       WHERE id = ? AND uploaded_by_user_id = ?`,
+    )
+    .get(uploadId, userId);
+}
+
+function findExpiredAttachmentUploads(maxAgeHours) {
+  return db
+    .prepare(
+      `SELECT *
+       FROM attachment_uploads
+       WHERE created_at <= datetime('now', ?)`,
+    )
+    .all(`-${maxAgeHours} hours`);
+}
+
+function deleteAttachmentUpload(uploadId) {
+  return db.prepare("DELETE FROM attachment_uploads WHERE id = ?").run(uploadId);
 }
 
 function findInboxByUserId(userId) {
@@ -342,7 +462,7 @@ function findByIdForUser(emailId, userId) {
     )
     .get(userId, emailId, userId, userId);
 
-  return email ? serializeEmail(email) : null;
+  return email ? serializeEmails([email])[0] : null;
 }
 
 function markAsRead(emailId) {
@@ -401,12 +521,17 @@ function updateReadStatus(emailId, isRead) {
 
 module.exports = {
   countUnreadByUserId,
+  createAttachmentUpload,
+  createAttachments,
   createEmail,
   createEmails,
   createVoiceNoteUpload,
   createVoiceNotes,
+  deleteAttachmentUpload,
   deleteVoiceNoteUpload,
   findByIdForUser,
+  findAttachmentUploadById,
+  findExpiredAttachmentUploads,
   findInboxByUserId,
   findOwnership,
   findRecipientReadStatus,

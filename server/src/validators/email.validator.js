@@ -15,13 +15,21 @@ function validateComposeRequest(req) {
     req.body.voice_note_upload_id !== undefined &&
     req.body.voice_note_upload_id !== null &&
     req.body.voice_note_upload_id !== "";
+  const hasAttachmentUploads = Array.isArray(req.body.attachment_upload_ids);
 
   if (!hasSingleRecipient && !hasManyRecipients) {
     throw createHttpError(400, "to_email or to_emails is required");
   }
 
-  if (!req.body.body && !hasVoiceNoteUpload) {
-    throw createHttpError(400, "body or voice_note_upload_id is required");
+  if (
+    !req.body.body &&
+    !hasVoiceNoteUpload &&
+    (!hasAttachmentUploads || req.body.attachment_upload_ids.length === 0)
+  ) {
+    throw createHttpError(
+      400,
+      "body, voice_note_upload_id, or attachment_upload_ids is required",
+    );
   }
 
   if (hasSingleRecipient) {
@@ -52,6 +60,15 @@ function validateComposeRequest(req) {
   } else {
     req.body.voice_note_upload_id = null;
   }
+
+  if (hasAttachmentUploads) {
+    req.body.attachment_upload_ids = req.body.attachment_upload_ids.map(
+      (uploadId, index) =>
+        parsePositiveInt(uploadId, `attachment_upload_ids[${index}]`),
+    );
+  } else {
+    req.body.attachment_upload_ids = [];
+  }
 }
 
 function validateVoiceNoteUploadRequest(req) {
@@ -79,6 +96,25 @@ function validateVoiceNoteUploadRequest(req) {
 
 function validateEmailIdParam(req) {
   req.params.id = String(parsePositiveInt(req.params.id, "id"));
+}
+
+function validateAttachmentUploadRequest(req) {
+  if (!req.file) {
+    throw createHttpError(400, "attachment file is required");
+  }
+
+  if (
+    req.body.attachment_original_size_bytes !== undefined &&
+    req.body.attachment_original_size_bytes !== null &&
+    req.body.attachment_original_size_bytes !== ""
+  ) {
+    req.body.attachment_original_size_bytes = parsePositiveInt(
+      req.body.attachment_original_size_bytes,
+      "attachment_original_size_bytes",
+    );
+  } else {
+    req.body.attachment_original_size_bytes = null;
+  }
 }
 
 function validateSearchRequest(req) {
@@ -109,6 +145,7 @@ function validateReadStatusRequest(req) {
 }
 
 module.exports = {
+  validateAttachmentUploadRequest,
   validateComposeRequest,
   validateEmailIdParam,
   validateReadStatusRequest,

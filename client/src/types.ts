@@ -17,6 +17,19 @@ export interface VoiceNoteUploadResponse extends VoiceNote {
   id: number;
 }
 
+export interface Attachment {
+  id?: number;
+  file_name: string;
+  url: string;
+  mime_type: string;
+  size_bytes: number;
+  original_size_bytes: number | null;
+}
+
+export interface AttachmentUploadResponse extends Attachment {
+  id: number;
+}
+
 export interface Email {
   id: number;
   from_user_id: number;
@@ -33,6 +46,7 @@ export interface Email {
   to_email?: string;
   deleted_at?: string;
   voice_note: VoiceNote | null;
+  attachments: Attachment[];
 }
 
 export interface AuthResponse {

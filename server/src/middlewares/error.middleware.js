@@ -11,6 +11,12 @@ function notFound(req, res, next) {
 function errorHandler(err, req, res, next) {
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
+      if (err.field === "attachment") {
+        return res
+          .status(400)
+          .json({ error: "Attachment file too large. Maximum size is 10MB" });
+      }
+
       if (err.field === "voice_note") {
         return res
           .status(400)
@@ -28,7 +34,8 @@ function errorHandler(err, req, res, next) {
   if (
     err.message &&
     (err.message.includes("Only image files") ||
-      err.message.includes("Only audio files"))
+      err.message.includes("Only audio files") ||
+      err.message.includes("Only image, PDF, Word, Excel, PowerPoint, and TXT"))
   ) {
     return res.status(400).json({ error: err.message });
   }
